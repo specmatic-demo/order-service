@@ -1,7 +1,5 @@
-'use strict';
-
-const express = require('express');
-const { randomUUID } = require('crypto');
+import { randomUUID } from 'node:crypto';
+import express, { type Request, type Response } from 'express';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -11,9 +9,30 @@ const port = Number.parseInt(process.env.ORDER_PORT || '9000', 10);
 const paymentBaseUrl = process.env.PAYMENT_SERVICE_BASE_URL || 'http://localhost:5201';
 const shippingBaseUrl = process.env.SHIPPING_SERVICE_BASE_URL || 'http://localhost:5202';
 
-const orders = new Map();
+type OrderItem = {
+  sku: string;
+  quantity: number;
+  unitPrice: number;
+};
 
-async function safeJsonFetch(url, options) {
+type CreateOrderPayload = {
+  customerId: string;
+  paymentMethodId: string;
+  items: OrderItem[];
+};
+
+type Order = {
+  id: string;
+  customerId: string;
+  status: 'PENDING_PAYMENT' | 'CONFIRMED' | 'SHIPPED' | 'CANCELLED';
+  items: OrderItem[];
+  totalAmount: number;
+  createdAt: string;
+};
+
+const orders = new Map<string, Order>();
+
+async function safeJsonFetch(url: string, options: RequestInit): Promise<unknown | null> {
   try {
     const response = await fetch(url, options);
     if (!response.ok) {
@@ -25,7 +44,7 @@ async function safeJsonFetch(url, options) {
   }
 }
 
-function buildOrder(orderId, payload) {
+function buildOrder(orderId: string, payload: CreateOrderPayload): Order {
   const totalAmount = payload.items.reduce((sum, item) => sum + Number(item.unitPrice) * Number(item.quantity), 0);
   return {
     id: orderId,
@@ -37,7 +56,7 @@ function buildOrder(orderId, payload) {
   };
 }
 
-function isValidOrderItem(item) {
+function isValidOrderItem(item: unknown): item is OrderItem {
   if (!item || typeof item !== 'object' || Array.isArray(item)) {
     return false;
   }
@@ -57,8 +76,8 @@ function isValidOrderItem(item) {
   return true;
 }
 
-app.post('/orders', async (req, res) => {
-  const payload = req.body || {};
+app.post('/orders', async (req: Request, res: Response) => {
+  const payload = (req.body ?? {}) as Partial<CreateOrderPayload>;
   if (typeof payload.customerId !== 'string' || typeof payload.paymentMethodId !== 'string' || !Array.isArray(payload.items) || payload.items.length === 0) {
     res.status(400).json({ error: 'Invalid order payload' });
     return;
@@ -69,8 +88,9 @@ app.post('/orders', async (req, res) => {
     return;
   }
 
+  const validatedPayload = payload as CreateOrderPayload;
   const orderId = randomUUID();
-  const order = buildOrder(orderId, payload);
+  const order = buildOrder(orderId, validatedPayload);
 
   await safeJsonFetch(`${paymentBaseUrl}/payments/authorize`, {
     method: 'POST',
@@ -79,7 +99,7 @@ app.post('/orders', async (req, res) => {
       orderId,
       amount: order.totalAmount,
       currency: 'USD',
-      paymentMethodId: payload.paymentMethodId
+      paymentMethodId: validatedPayload.paymentMethodId
     })
   });
 
@@ -96,7 +116,7 @@ app.post('/orders', async (req, res) => {
   res.status(201).json(order);
 });
 
-app.get('/orders/:orderId', (req, res) => {
+app.get('/orders/:orderId', (req: Request, res: Response) => {
   const { orderId } = req.params;
   const existing = orders.get(orderId);
   if (existing) {
