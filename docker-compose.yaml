@@ -1,0 +1,6 @@
+services:
+  my-app:
+    build: .
+    container_name: order-service
+    restart: unless-stopped
+    network_mode: host

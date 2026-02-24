@@ -1,0 +1,58 @@
+version: 3
+systemUnderTest:
+  service:
+    $ref: "#/components/services/orderService"
+dependencies:
+  services:
+    - service:
+        $ref: "#/components/services/paymentService"
+        runOptions:
+          $ref: "#/components/runOptions/paymentServiceMock"
+    - service:
+        $ref: "#/components/services/shippingService"
+        runOptions:
+          $ref: "#/components/runOptions/shippingServiceMock"
+components:
+  sources:
+    centralContractRepo:
+      git:
+        url: https://github.com/specmatic-demo/central-contract-repository
+  services:
+    orderService:
+      description: "Order Service"
+      definitions:
+        - definition:
+            source:
+              $ref: "#/components/sources/centralContractRepo"
+            specs:
+              - spec:
+                  path: "contracts/services/order-service/http/openapi.yaml"
+    paymentService:
+      description: "Payment Service dependency"
+      definitions:
+        - definition:
+            source:
+              $ref: "#/components/sources/centralContractRepo"
+            specs:
+              - spec:
+                  path: "contracts/services/payment-service/http/openapi.yaml"
+    shippingService:
+      description: "Shipping Service dependency"
+      definitions:
+        - definition:
+            source:
+              $ref: "#/components/sources/centralContractRepo"
+            specs:
+              - spec:
+                  path: "contracts/services/shipping-service/http/openapi.yaml"
+  runOptions:
+    paymentServiceMock:
+      openapi:
+        type: mock
+        port: 5201
+        host: localhost
+    shippingServiceMock:
+      openapi:
+        type: mock
+        port: 5202
+        host: localhost
