@@ -37,9 +37,34 @@ function buildOrder(orderId, payload) {
   };
 }
 
+function isValidOrderItem(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return false;
+  }
+
+  if (typeof item.sku !== 'string' || item.sku.trim() === '') {
+    return false;
+  }
+
+  if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+    return false;
+  }
+
+  if (typeof item.unitPrice !== 'number' || !Number.isFinite(item.unitPrice)) {
+    return false;
+  }
+
+  return true;
+}
+
 app.post('/orders', async (req, res) => {
   const payload = req.body || {};
   if (typeof payload.customerId !== 'string' || typeof payload.paymentMethodId !== 'string' || !Array.isArray(payload.items) || payload.items.length === 0) {
+    res.status(400).json({ error: 'Invalid order payload' });
+    return;
+  }
+
+  if (payload.items.some((item) => !isValidOrderItem(item))) {
     res.status(400).json({ error: 'Invalid order payload' });
     return;
   }
