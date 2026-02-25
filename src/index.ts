@@ -31,6 +31,7 @@ type Order = {
   items: OrderItem[];
   totalAmount: number;
   createdAt: string;
+  cancelledAt?: string;
 };
 
 type AnalyticsNotificationEvent = {
@@ -42,6 +43,7 @@ type AnalyticsNotificationEvent = {
 };
 
 const orders = new Map<string, Order>();
+const orderStatuses = new Set(['PENDING_PAYMENT', 'CONFIRMED', 'SHIPPED', 'CANCELLED']);
 
 async function safeJsonFetch(url: string, options: RequestInit): Promise<unknown | null> {
   try {
@@ -85,6 +87,16 @@ function isValidOrderItem(item: unknown): item is OrderItem {
   }
 
   return true;
+}
+
+function isValidDateTime(value: string): boolean {
+  // RFC3339 profile used by OpenAPI date-time.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return false;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed);
 }
 
 function publishAnalyticsNotification(event: AnalyticsNotificationEvent): void {
@@ -186,6 +198,99 @@ app.get('/orders/:orderId', (req: Request, res: Response) => {
     totalAmount: 100.0,
     createdAt: new Date().toISOString()
   });
+});
+
+app.get('/orders', (req: Request, res: Response) => {
+  const customerId = typeof req.query.customerId === 'string' ? req.query.customerId : undefined;
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const from = typeof req.query.from === 'string' ? req.query.from : undefined;
+  const to = typeof req.query.to === 'string' ? req.query.to : undefined;
+
+  if (status && !orderStatuses.has(status)) {
+    res.status(400).json({ error: 'Invalid query parameters' });
+    return;
+  }
+
+  if ((from && !isValidDateTime(from)) || (to && !isValidDateTime(to))) {
+    res.status(400).json({ error: 'Invalid query parameters' });
+    return;
+  }
+
+  let list = Array.from(orders.values());
+  if (list.length === 0) {
+    list = [{
+      id: randomUUID(),
+      customerId: customerId || 'customer-default',
+      status: (status as Order['status']) || 'CONFIRMED',
+      items: [{ sku: 'SKU-DEFAULT', quantity: 1, unitPrice: 100 }],
+      totalAmount: 100,
+      createdAt: new Date().toISOString()
+    }];
+  }
+
+  const filtered = list.filter((order) => {
+    if (customerId && order.customerId !== customerId) {
+      return false;
+    }
+
+    if (status && order.status !== status) {
+      return false;
+    }
+
+    if (from && order.createdAt < from) {
+      return false;
+    }
+
+    if (to && order.createdAt > to) {
+      return false;
+    }
+
+    return true;
+  });
+
+  res.status(200).json(filtered);
+});
+
+app.post('/orders/:orderId/cancel', (req: Request, res: Response) => {
+  const { orderId } = req.params;
+  const payload = req.body ?? {};
+
+  if (typeof payload !== 'object' || Array.isArray(payload)) {
+    res.status(400).json({ error: 'Invalid cancellation request' });
+    return;
+  }
+
+  if (typeof payload.reason !== 'undefined') {
+    if (typeof payload.reason !== 'string' || payload.reason.length > 256) {
+      res.status(400).json({ error: 'Invalid cancellation request' });
+      return;
+    }
+  }
+
+  const existing = orders.get(orderId) || {
+    id: orderId,
+    customerId: `customer-${orderId}`,
+    status: 'CONFIRMED' as const,
+    items: [{ sku: 'SKU-DEFAULT', quantity: 1, unitPrice: 100 }],
+    totalAmount: 100,
+    createdAt: new Date().toISOString()
+  };
+
+  const cancelled: Order = {
+    ...existing,
+    status: 'CANCELLED',
+    cancelledAt: new Date().toISOString()
+  };
+
+  orders.set(orderId, cancelled);
+  publishAnalyticsNotification({
+    notificationId: randomUUID(),
+    requestId: orderId,
+    title: 'OrderCancelled',
+    body: `Order ${orderId} cancelled`,
+    priority: 'NORMAL'
+  });
+  res.status(200).json(cancelled);
 });
 
 app.listen(port, host, () => {
