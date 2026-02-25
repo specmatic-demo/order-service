@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import express, { type Request, type Response } from 'express';
 import mqtt from 'mqtt';
+import type { AnalyticsNotificationEvent, CreateOrderPayload, Order, OrderItem } from './types';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -11,36 +12,6 @@ const paymentBaseUrl = process.env.PAYMENT_SERVICE_BASE_URL || 'http://localhost
 const shippingBaseUrl = process.env.SHIPPING_SERVICE_BASE_URL || 'http://localhost:5202';
 const analyticsMqttUrl = process.env.ANALYTICS_MQTT_URL || 'mqtt://localhost:1883';
 const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification/user';
-
-type OrderItem = {
-  sku: string;
-  quantity: number;
-  unitPrice: number;
-};
-
-type CreateOrderPayload = {
-  customerId: string;
-  paymentMethodId: string;
-  items: OrderItem[];
-};
-
-type Order = {
-  id: string;
-  customerId: string;
-  status: 'PENDING_PAYMENT' | 'CONFIRMED' | 'SHIPPED' | 'CANCELLED';
-  items: OrderItem[];
-  totalAmount: number;
-  createdAt: string;
-  cancelledAt?: string;
-};
-
-type AnalyticsNotificationEvent = {
-  notificationId: string;
-  requestId: string;
-  title: string;
-  body: string;
-  priority: 'LOW' | 'NORMAL' | 'HIGH';
-};
 
 const orders = new Map<string, Order>();
 const orderStatuses = new Set(['PENDING_PAYMENT', 'CONFIRMED', 'SHIPPED', 'CANCELLED']);
@@ -73,16 +44,19 @@ function isValidOrderItem(item: unknown): item is OrderItem {
   if (!item || typeof item !== 'object' || Array.isArray(item)) {
     return false;
   }
+  const payload = item as Record<string, unknown>;
 
-  if (typeof item.sku !== 'string' || item.sku.trim() === '') {
+  if (typeof payload.sku !== 'string' || payload.sku.trim() === '') {
     return false;
   }
 
-  if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+  const quantity = payload.quantity;
+  if (typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1) {
     return false;
   }
 
-  if (typeof item.unitPrice !== 'number' || !Number.isFinite(item.unitPrice)) {
+  const unitPrice = payload.unitPrice;
+  if (typeof unitPrice !== 'number' || !Number.isFinite(unitPrice)) {
     return false;
   }
 
