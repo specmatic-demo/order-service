@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import express, { type Request, type Response } from 'express';
+import mqtt from 'mqtt';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -8,6 +9,8 @@ const host = process.env.ORDER_HOST || '0.0.0.0';
 const port = Number.parseInt(process.env.ORDER_PORT || '9000', 10);
 const paymentBaseUrl = process.env.PAYMENT_SERVICE_BASE_URL || 'http://localhost:5201';
 const shippingBaseUrl = process.env.SHIPPING_SERVICE_BASE_URL || 'http://localhost:5202';
+const analyticsMqttUrl = process.env.ANALYTICS_MQTT_URL || 'mqtt://localhost:1883';
+const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification/user';
 
 type OrderItem = {
   sku: string;
@@ -28,6 +31,14 @@ type Order = {
   items: OrderItem[];
   totalAmount: number;
   createdAt: string;
+};
+
+type AnalyticsNotificationEvent = {
+  notificationId: string;
+  requestId: string;
+  title: string;
+  body: string;
+  priority: 'LOW' | 'NORMAL' | 'HIGH';
 };
 
 const orders = new Map<string, Order>();
@@ -76,6 +87,42 @@ function isValidOrderItem(item: unknown): item is OrderItem {
   return true;
 }
 
+function publishAnalyticsNotification(event: AnalyticsNotificationEvent): void {
+  const client = mqtt.connect(analyticsMqttUrl, { reconnectPeriod: 0, connectTimeout: 1000 });
+  const payload = JSON.stringify(event);
+  let completed = false;
+
+  const done = (): void => {
+    if (completed) {
+      return;
+    }
+
+    completed = true;
+    client.end(true);
+  };
+
+  const timeout = setTimeout(() => {
+    done();
+  }, 1500);
+
+  client.once('connect', () => {
+    client.publish(analyticsNotificationTopic, payload, { qos: 1 }, (error?: Error | null) => {
+      if (error) {
+        console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${error.message}`);
+      }
+
+      clearTimeout(timeout);
+      done();
+    });
+  });
+
+  client.once('error', (error: Error) => {
+    console.error(`Failed to connect to analytics MQTT broker (${analyticsMqttUrl}): ${error.message}`);
+    clearTimeout(timeout);
+    done();
+  });
+}
+
 app.post('/orders', async (req: Request, res: Response) => {
   const payload = (req.body ?? {}) as Partial<CreateOrderPayload>;
   if (typeof payload.customerId !== 'string' || typeof payload.paymentMethodId !== 'string' || !Array.isArray(payload.items) || payload.items.length === 0) {
@@ -113,6 +160,13 @@ app.post('/orders', async (req: Request, res: Response) => {
   });
 
   orders.set(orderId, order);
+  publishAnalyticsNotification({
+    notificationId: randomUUID(),
+    requestId: orderId,
+    title: 'OrderCreated',
+    body: `Order ${orderId} created for customer ${order.customerId}`,
+    priority: 'HIGH'
+  });
   res.status(201).json(order);
 });
 
