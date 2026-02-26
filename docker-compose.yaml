@@ -4,3 +4,8 @@ services:
     container_name: order-service
     restart: unless-stopped
     network_mode: host
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: order-service-mqtt
+    restart: unless-stopped
+    network_mode: host
