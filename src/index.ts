@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import express, { type Request, type Response } from 'express';
-import mqtt from 'mqtt';
+import { Kafka, type Producer } from 'kafkajs';
 import type { AnalyticsNotificationEvent, CreateOrderPayload, Order, OrderItem } from './types';
 
 const app = express();
@@ -10,11 +10,29 @@ const host = process.env.ORDER_HOST || '0.0.0.0';
 const port = Number.parseInt(process.env.ORDER_PORT || '9000', 10);
 const paymentBaseUrl = process.env.PAYMENT_SERVICE_BASE_URL || 'http://localhost:5201';
 const shippingBaseUrl = process.env.SHIPPING_SERVICE_BASE_URL || 'http://localhost:5202';
-const analyticsMqttUrl = process.env.ANALYTICS_MQTT_URL || 'mqtt://localhost:1883';
-const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification/user';
+const analyticsKafkaBrokers = (process.env.ANALYTICS_KAFKA_BROKERS || 'localhost:9092')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification.user';
 
 const orders = new Map<string, Order>();
 const orderStatuses = new Set(['PENDING_PAYMENT', 'CONFIRMED', 'SHIPPED', 'CANCELLED']);
+const kafka = new Kafka({
+  clientId: 'order-service-analytics',
+  brokers: analyticsKafkaBrokers
+});
+const analyticsProducer: Producer = kafka.producer();
+let analyticsProducerConnected = false;
+
+async function ensureAnalyticsProducerConnected(): Promise<void> {
+  if (analyticsProducerConnected) {
+    return;
+  }
+
+  await analyticsProducer.connect();
+  analyticsProducerConnected = true;
+}
 
 async function safeJsonFetch(url: string, options: RequestInit): Promise<unknown | null> {
   try {
@@ -64,7 +82,6 @@ function isValidOrderItem(item: unknown): item is OrderItem {
 }
 
 function isValidDateTime(value: string): boolean {
-  // RFC3339 profile used by OpenAPI date-time.
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
     return false;
   }
@@ -73,39 +90,11 @@ function isValidDateTime(value: string): boolean {
   return Number.isFinite(parsed);
 }
 
-function publishAnalyticsNotification(event: AnalyticsNotificationEvent): void {
-  const client = mqtt.connect(analyticsMqttUrl, { reconnectPeriod: 0, connectTimeout: 1000 });
-  const payload = JSON.stringify(event);
-  let completed = false;
-
-  const done = (): void => {
-    if (completed) {
-      return;
-    }
-
-    completed = true;
-    client.end(true);
-  };
-
-  const timeout = setTimeout(() => {
-    done();
-  }, 1500);
-
-  client.once('connect', () => {
-    client.publish(analyticsNotificationTopic, payload, { qos: 1 }, (error?: Error | null) => {
-      if (error) {
-        console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${error.message}`);
-      }
-
-      clearTimeout(timeout);
-      done();
-    });
-  });
-
-  client.once('error', (error: Error) => {
-    console.error(`Failed to connect to analytics MQTT broker (${analyticsMqttUrl}): ${error.message}`);
-    clearTimeout(timeout);
-    done();
+async function publishAnalyticsNotification(event: AnalyticsNotificationEvent): Promise<void> {
+  await ensureAnalyticsProducerConnected();
+  await analyticsProducer.send({
+    topic: analyticsNotificationTopic,
+    messages: [{ key: event.requestId, value: JSON.stringify(event) }]
   });
 }
 
@@ -146,13 +135,18 @@ app.post('/orders', async (req: Request, res: Response) => {
   });
 
   orders.set(orderId, order);
-  publishAnalyticsNotification({
-    notificationId: randomUUID(),
-    requestId: orderId,
-    title: 'OrderCreated',
-    body: `Order ${orderId} created for customer ${order.customerId}`,
-    priority: 'HIGH'
-  });
+  try {
+    await publishAnalyticsNotification({
+      notificationId: randomUUID(),
+      requestId: orderId,
+      title: 'OrderCreated',
+      body: `Order ${orderId} created for customer ${order.customerId}`,
+      priority: 'HIGH'
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${message}`);
+  }
   res.status(201).json(order);
 });
 
@@ -225,7 +219,7 @@ app.get('/orders', (req: Request, res: Response) => {
   res.status(200).json(filtered);
 });
 
-app.post('/orders/:orderId/cancel', (req: Request, res: Response) => {
+app.post('/orders/:orderId/cancel', async (req: Request, res: Response) => {
   const { orderId } = req.params;
   const payload = req.body ?? {};
 
@@ -257,13 +251,18 @@ app.post('/orders/:orderId/cancel', (req: Request, res: Response) => {
   };
 
   orders.set(orderId, cancelled);
-  publishAnalyticsNotification({
-    notificationId: randomUUID(),
-    requestId: orderId,
-    title: 'OrderCancelled',
-    body: `Order ${orderId} cancelled`,
-    priority: 'NORMAL'
-  });
+  try {
+    await publishAnalyticsNotification({
+      notificationId: randomUUID(),
+      requestId: orderId,
+      title: 'OrderCancelled',
+      body: `Order ${orderId} cancelled`,
+      priority: 'NORMAL'
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${message}`);
+  }
   res.status(200).json(cancelled);
 });
 
