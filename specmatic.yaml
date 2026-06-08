@@ -21,6 +21,10 @@ components:
     centralContractRepo:
       git:
         url: https://github.com/specmatic-demo/central-contract-repository
+    notificationServiceRepo:
+      git:
+        url: https://github.com/specmatic-demo/notification-service
+        branch: migrated_to_federated_repo
   services:
     orderService:
       description: "Order Service"
@@ -54,10 +58,10 @@ components:
       definitions:
         - definition:
             source:
-              $ref: "#/components/sources/centralContractRepo"
+              $ref: "#/components/sources/notificationServiceRepo"
             specs:
               - spec:
-                  path: "contracts/services/notification-service/events/asyncapi.yaml"
+                  path: "specs/asyncapi.yaml"
   runOptions:
     paymentServiceMock:
       openapi:
